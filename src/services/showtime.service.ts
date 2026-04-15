@@ -1,7 +1,7 @@
 // src/services/showtime.service.ts
+import { Prisma } from "@prisma/client";
 import prisma from "../utils/prisma";
 import { NotFoundError, ConflictError, ValidationError } from "../utils/errors";
-import { createSeatsForShowtime } from "../../prisma/seed";
 
 export interface CreateShowtimeInput {
   movieId: string;
@@ -17,13 +17,35 @@ export interface ShowtimeQuery {
   hallId?: string;
 }
 
+// Generates one seat record per physical seat for a given showtime
+async function createSeatsForShowtime(
+  showtimeId: string,
+  rows: number,
+  columns: number
+) {
+  const seats: {
+    showtimeId: string;
+    row: number;
+    column: number;
+    label: string;
+  }[] = [];
+
+  for (let r = 1; r <= rows; r++) {
+    for (let c = 1; c <= columns; c++) {
+      const rowLabel = String.fromCharCode(64 + r); // A, B, C…
+      seats.push({ showtimeId, row: r, column: c, label: `${rowLabel}${c}` });
+    }
+  }
+  await prisma.seat.createMany({ data: seats, skipDuplicates: true });
+}
+
 export class ShowtimeService {
   /**
    * List showtimes, optionally filtered by date / movie / hall.
    * Returns showtimes with seat availability counts.
    */
   async list(query: ShowtimeQuery = {}) {
-    const where: any = {};
+    const where: Prisma.ShowtimeWhereInput = {};
 
     if (query.movieId) where.movieId = query.movieId;
     if (query.hallId) where.hallId = query.hallId;
@@ -44,7 +66,13 @@ export class ShowtimeService {
       orderBy: { startsAt: "asc" },
       include: {
         movie: {
-          select: { id: true, title: true, genre: true, durationMin: true, posterUrl: true },
+          select: {
+            id: true,
+            title: true,
+            genre: true,
+            durationMin: true,
+            posterUrl: true,
+          },
         },
         hall: {
           select: { id: true, name: true, rows: true, columns: true },
@@ -58,7 +86,7 @@ export class ShowtimeService {
       },
     });
 
-    return showtimes.map((s: typeof showtimes[number]) => ({
+    return showtimes.map((s) => ({
       ...s,
       totalSeats: s._count.seats,
       reservedSeats: s._count.reservations,
@@ -97,7 +125,8 @@ export class ShowtimeService {
    *  3. startsAt is in the future
    */
   async create(input: CreateShowtimeInput) {
-    const { movieId, hallId, startsAt, priceAmount, priceCurrency = "USD" } = input;
+    const { movieId, hallId, startsAt, priceAmount, priceCurrency = "USD" } =
+      input;
 
     if (new Date(startsAt) <= new Date()) {
       throw new ValidationError("Showtime must be scheduled in the future");
@@ -114,9 +143,8 @@ export class ShowtimeService {
       new Date(startsAt).getTime() + movie.durationMin * 60 * 1000
     );
 
-    // Check for overlapping showtimes in the same hall
-    // A showtime overlaps if it starts before our endsAt AND ends after our startsAt
-    const bufferMs = 15 * 60 * 1000; // 15-minute cleanup buffer
+    // Check for overlapping showtimes in the same hall (+ 15-min buffer)
+    const bufferMs = 15 * 60 * 1000;
     const overlap = await prisma.showtime.findFirst({
       where: {
         hallId,
@@ -134,17 +162,20 @@ export class ShowtimeService {
       data: { movieId, hallId, startsAt, endsAt, priceAmount, priceCurrency },
     });
 
-    // Generate seats for this showtime in the same transaction-ish call
     await createSeatsForShowtime(showtime.id, hall.rows, hall.columns);
 
     return this.getById(showtime.id);
   }
 
-  /** Delete a showtime (admin only) - only if no confirmed reservations */
+  /** Delete a showtime — only allowed if no confirmed reservations exist */
   async delete(id: string) {
     const showtime = await prisma.showtime.findUnique({
       where: { id },
-      include: { _count: { select: { reservations: { where: { status: "CONFIRMED" } } } } },
+      include: {
+        _count: {
+          select: { reservations: { where: { status: "CONFIRMED" } } },
+        },
+      },
     });
     if (!showtime) throw new NotFoundError("Showtime");
 

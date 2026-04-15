@@ -2,10 +2,10 @@
   "name": "movie-reservation-service",
   "version": "1.0.0",
   "description": "Backend for a movie reservation service",
-  "main": "dist/server.js",
+  "main": "dist/src/server.js",
   "scripts": {
     "build": "tsc",
-    "start": "node dist/server.js",
+    "start": "node dist/src/server.js",
     "dev": "nodemon --watch src --ext ts --exec ts-node src/server.ts",
     "db:migrate": "prisma migrate dev",
     "db:generate": "prisma generate",
